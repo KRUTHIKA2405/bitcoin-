@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from src.data_pipeline import compute_technical_indicators, download_btc_data, prepare_btc_dataset
+import os
+from src.data_pipeline import compute_technical_indicators, download_btc_data, download_eth_data, prepare_btc_dataset, prepare_eth_dataset, load_dynamic_cryptocurrencies, download_crypto_data, prepare_crypto_dataset
 from src.models import (
     FEATURE_COLUMNS,
     prepare_features,
@@ -58,12 +59,38 @@ MODEL_OPTIONS = [
 
 
 @st.cache_data(show_spinner=False)
-def load_data() -> pd.DataFrame:
+def load_data(crypto: str = "BTC") -> pd.DataFrame:
+    """Load cryptocurrency data from CSV file or download if not available."""
+    # Try to load from existing CSV file (lowercase filename)
+    csv_path = f"data/processed_{crypto.lower()}.csv"
+    
     try:
-        df = pd.read_csv("data/processed_btc.csv", parse_dates=[0], index_col=0)
+        with st.spinner(f"Loading {crypto} data..."):
+            df = pd.read_csv(csv_path, parse_dates=[0], index_col=0)
+            return df
     except FileNotFoundError:
-        df = prepare_btc_dataset()
-    return df
+        pass  # File doesn't exist, download it
+    
+    # File doesn't exist - try to download and prepare
+    try:
+        with st.spinner(f"Downloading {crypto} data from Yahoo Finance..."):
+            # Get ticker from cryptocurrency list or assume X-USD format
+            cryptos = load_dynamic_cryptocurrencies()
+            if crypto in cryptos:
+                ticker = cryptos[crypto]
+            else:
+                ticker = f"{crypto}-USD"
+            
+            # Download and prepare data
+            df = download_crypto_data(ticker)
+            # Apply technical indicators
+            df = compute_technical_indicators(df)
+            # Save to CSV for future use
+            df.to_csv(csv_path)
+            return df
+    except Exception as e:
+        st.error(f"Could not load data for {crypto}. Error: {e}")
+        return None
 
 
 @st.cache_data(show_spinner=False)
@@ -126,25 +153,50 @@ def get_predictions(df: pd.DataFrame, selected_models: list[str]) -> tuple[dict,
 
 
 def main() -> None:
-    st.set_page_config(page_title="Bitcoin Price Prediction", layout="wide")
-    st.title("AI-powered Bitcoin Price Prediction")
+    st.set_page_config(page_title="Cryptocurrency Price Prediction", layout="wide")
+
+    # Load available cryptocurrencies
+    available_cryptos = load_dynamic_cryptocurrencies()
+    if not available_cryptos:
+        st.error("Could not load cryptocurrency list. Please check cryptocurrencies.json")
+        return
+    
+    crypto_list = sorted(available_cryptos.keys())
+    
+    # Cryptocurrency selection
+    st.sidebar.header("Cryptocurrency Selection")
+    selected_crypto = st.sidebar.selectbox(
+        f"Select Cryptocurrency ({len(crypto_list)} available)",
+        crypto_list,
+        index=0 if "BTC" in crypto_list else 0
+    )
+    
+    # Get ticker and name
+    crypto_ticker = available_cryptos.get(selected_crypto, f"{selected_crypto}-USD")
+    crypto_name = f"{selected_crypto} ({crypto_ticker})"
+
+    st.title(f"🪙 AI-powered {crypto_name} Price Prediction")
     st.write(
-        "Explore machine learning, time series, and deep learning predictions for BTC-USD with interactive charts and model comparisons."
+        f"Explore machine learning, time series, and deep learning predictions for {crypto_ticker} with interactive charts and model comparisons."
     )
 
-    df = load_data()
-    if "df" not in st.session_state:
-        st.session_state.df = df
-    df = st.session_state.df
+    df = load_data(selected_crypto)
+    if df is None or df.empty:
+        st.error(f"Could not load data for {selected_crypto}. Please try another cryptocurrency.")
+        return
+    
+    if f"df_{selected_crypto}" not in st.session_state:
+        st.session_state[f"df_{selected_crypto}"] = df
+    df = st.session_state[f"df_{selected_crypto}"]
 
     st.sidebar.header("Data Input")
-    with st.sidebar.expander("Upload BTC data CSV"):
+    with st.sidebar.expander(f"Upload {selected_crypto} data CSV"):
         upload = st.file_uploader("Select CSV file", type=["csv"])
         if upload is not None and st.sidebar.button("Append uploaded data"):
             try:
                 uploaded_df = pd.read_csv(upload, parse_dates=["Date"], index_col="Date")
                 df = append_user_data(df, uploaded_df)
-                st.session_state.df = df
+                st.session_state[f"df_{selected_crypto}"] = df
                 st.sidebar.success("Uploaded data appended successfully.")
             except Exception as exc:
                 st.sidebar.error(f"Upload error: {exc}")
@@ -171,18 +223,18 @@ def main() -> None:
                     index=[pd.to_datetime(new_date)],
                 )
                 df = append_user_data(df, new_row)
-                st.session_state.df = df
+                st.session_state[f"df_{selected_crypto}"] = df
                 st.success("New data row added to the dataset.")
             except Exception as exc:
                 st.error(f"Could not add row: {exc}")
 
     if st.sidebar.button("Reset dataset"):
-        st.session_state.df = load_data()
-        st.experimental_rerun()
+        st.session_state[f"df_{selected_crypto}"] = load_data(selected_crypto)
+        st.rerun()
 
     if st.sidebar.button("Save dataset to CSV"):
-        df.to_csv("data/processed_btc.csv")
-        st.sidebar.success("Dataset saved to data/processed_btc.csv")
+        df.to_csv(f"data/processed_{selected_crypto.lower()}.csv")
+        st.sidebar.success(f"Dataset saved to data/processed_{selected_crypto.lower()}.csv")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Dataset details")
@@ -194,7 +246,7 @@ def main() -> None:
     row1, row2, row3, row4 = st.columns(4)
     row1.metric("Rows", len(df))
     row2.metric("Date range", f"{df.index.min().date()} → {df.index.max().date()}")
-    row3.metric("Latest Close", f"${df['Close'].iloc[-1]:,.2f}")
+    row3.metric("Latest Close", f"${df['Close'].iloc[-1]:,.2f} ({crypto_ticker})")
     row4.metric("Average Volume", f"{df['Volume'].mean():,.0f}")
 
     with st.expander("Show dataset preview"):
@@ -207,8 +259,11 @@ def main() -> None:
     st.sidebar.header("Model Controls")
     selected_models = st.sidebar.multiselect("Select models to compare", MODEL_OPTIONS, default=["Linear Regression", "ARIMA"])
     if st.sidebar.button("Refresh data"):
-        df = prepare_btc_dataset()
-        st.session_state.df = df
+        if selected_crypto == "BTC":
+            df = prepare_btc_dataset()
+        else:
+            df = prepare_eth_dataset()
+        st.session_state[f"df_{selected_crypto}"] = df
         st.experimental_rerun()
 
     # Add a button to trigger analysis
@@ -269,7 +324,7 @@ def main() -> None:
 
     st.markdown("### Trading Signals")
     st.write(
-        "The alert logic compares each model's latest predicted BTC close against the current market close. "
+        f"The alert logic compares each model's latest predicted {crypto_ticker} close against the current market close. "
         "A prediction more than 0.5% higher produces a Buy alert, more than 0.5% lower produces a Sell alert, "
         "and otherwise the model recommends Hold."
     )
