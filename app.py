@@ -226,20 +226,17 @@ def main() -> None:
     with st.spinner("Training models and generating predictions..."):
         predictions, metrics, comparison, volatility_series, test_index, y_test, next_day_predictions, latest_close = get_predictions(df, selected_models)
 
-    col1, col2 = st.columns((3, 1))
-    with col1:
-        st.subheader("Actual vs Predicted")
-        chart_data = pd.DataFrame({"Actual Close": df["Close"].iloc[int(len(df) * 0.8) :]})
-        for name, series in predictions.items():
-            chart_data[name] = series
-        st.line_chart(chart_data.dropna())
+    st.subheader("Actual vs Predicted")
+    chart_data = pd.DataFrame({"Actual Close": df["Close"].iloc[int(len(df) * 0.8) :]})
+    for name, series in predictions.items():
+        chart_data[name] = series
+    st.line_chart(chart_data.dropna())
 
-    with col2:
-        st.subheader("Performance Metrics")
-        if metrics:
-            metric_df = pd.DataFrame(metrics).T[["MAE", "RMSE", "Accuracy"]]
-            metric_df.columns = ["MAE", "RMSE", "Accuracy (%)"]
-            st.dataframe(metric_df.style.format("{:.2f}"), height=320)
+    st.subheader("Performance Metrics")
+    if metrics:
+        metric_df = pd.DataFrame(metrics).T[["MAE", "RMSE", "Accuracy"]]
+        metric_df.columns = ["MAE", "RMSE", "Accuracy (%)"]
+        st.dataframe(metric_df.style.format("{:.2f}"))
 
     if next_day_predictions:
         st.subheader("Next-Day Predictions")
@@ -262,7 +259,7 @@ def main() -> None:
                     "Expected Change (%)": f"{change_pct:.2f}%",
                 }
             )
-        st.dataframe(pd.DataFrame(next_day_rows), height=240)
+        st.dataframe(pd.DataFrame(next_day_rows))
 
     st.markdown("### Trading Signals")
     st.write(
@@ -310,8 +307,10 @@ def main() -> None:
         st.pyplot(fig)
         st.line_chart(pd.DataFrame({"Forecasted Volatility": volatility_series, "Actual Volatility": np.abs(df["Close"].pct_change().dropna().iloc[int(len(df["Close"].pct_change().dropna()) * 0.8) :])}).dropna())
 
+    st.markdown("---")
+    st.markdown("### Combined Predictions & Volatility Analysis")
     plot_predictions(df["Close"].iloc[int(len(df) * 0.8) :], predictions, volatility_series)
-    st.image("outputs/model_comparison.png", caption="Combined prediction comparison chart")
+    st.image("outputs/model_comparison.png", caption="Combined prediction comparison chart", use_column_width=True)
 
     st.markdown("---")
     st.write("Built with Yahoo Finance data, sklearn, xgboost, statsmodels, arch, and TensorFlow.")
