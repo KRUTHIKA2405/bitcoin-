@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
 from xgboost import XGBRegressor
 from statsmodels.tsa.arima.model import ARIMA
@@ -40,11 +39,6 @@ def split_train_test(X: pd.DataFrame, y: pd.Series, test_size: float = 0.2) -> t
 
 def train_linear_regression(X_train: pd.DataFrame, y_train: pd.Series) -> LinearRegression:
     model = LinearRegression()
-    model.fit(X_train, y_train)
-    return model
-
-def train_random_forest(X_train: pd.DataFrame, y_train: pd.Series) -> RandomForestRegressor:
-    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
     return model
 
@@ -139,7 +133,7 @@ def train_lstm(X_train: pd.DataFrame, y_train: pd.Series, window_size: int = 60)
         Dense(1),
     ])
     model.compile(optimizer=Adam(learning_rate=0.001), loss="mse")
-    model.fit(X_seq, y_seq, epochs=20, batch_size=32, verbose=0)
+    model.fit(X_seq, y_seq, epochs=10, batch_size=32, verbose=0)
     metadata = {"window_size": window_size}
     return model, scaler_X, scaler_y, metadata
 
@@ -157,7 +151,7 @@ def train_cnn_lstm(X_train: pd.DataFrame, y_train: pd.Series, window_size: int =
         Dense(1),
     ])
     model.compile(optimizer=Adam(learning_rate=0.001), loss="mse")
-    model.fit(X_seq, y_seq, epochs=20, batch_size=32, verbose=0)
+    model.fit(X_seq, y_seq, epochs=10, batch_size=32, verbose=0)
     metadata = {"window_size": window_size}
     return model, scaler_X, scaler_y, metadata
 
@@ -165,18 +159,27 @@ def predict_sequence_model(
     model: Sequential,
     scaler_X: MinMaxScaler,
     scaler_y: MinMaxScaler,
+    X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     y_test: pd.Series,
     window_size: int = 60,
 ) -> pd.Series:
-    X_scaled = scaler_X.transform(X_test)
+    # Combine train and test data for scaling
+    X_combined = pd.concat([X_train, X_test])
+    X_scaled = scaler_X.transform(X_combined)
+
+    # Build sequences starting from the beginning of test data
+    # Use the last window_size points from training + test data
     X_seq = []
+    start_idx = len(X_train) - window_size
+
     for i in range(window_size, len(X_scaled)):
         X_seq.append(X_scaled[i - window_size : i])
-    if not X_seq:
-        return pd.Series([], dtype=float)
+
     X_seq = np.array(X_seq)
     predictions_scaled = model.predict(X_seq, verbose=0)
     predictions = scaler_y.inverse_transform(predictions_scaled).ravel()
-    output_index = X_test.index[window_size:]
+
+    # Return predictions aligned with test set
+    output_index = X_combined.index[window_size:]
     return pd.Series(predictions, index=output_index)

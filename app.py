@@ -7,8 +7,6 @@ from src.models import (
     prepare_features,
     split_train_test,
     train_linear_regression,
-    train_random_forest,
-    train_xgboost,
     arima_rolling_forecast,
     arima_next_day,
     garch_volatility_forecast,
@@ -52,8 +50,6 @@ def get_trade_signal(actual_price: float, predicted_price: float, threshold: flo
 
 MODEL_OPTIONS = [
     "Linear Regression",
-    "Random Forest",
-    "XGBoost",
     "ARIMA",
     "GARCH",
     "LSTM",
@@ -87,20 +83,6 @@ def get_predictions(df: pd.DataFrame, selected_models: list[str]) -> tuple[dict,
         results["Linear Regression"] = calculate_metrics(y_test, preds)
         next_day_predictions["Linear Regression"] = predict_next_day_ml(lr_model, X.iloc[-1])
 
-    if "Random Forest" in selected_models:
-        rf_model = train_random_forest(X_train, y_train)
-        preds = pd.Series(rf_model.predict(X_test), index=X_test.index)
-        predictions["Random Forest"] = preds
-        results["Random Forest"] = calculate_metrics(y_test, preds)
-        next_day_predictions["Random Forest"] = predict_next_day_ml(rf_model, X.iloc[-1])
-
-    if "XGBoost" in selected_models:
-        xgb_model = train_xgboost(X_train, y_train)
-        preds = pd.Series(xgb_model.predict(X_test), index=X_test.index)
-        predictions["XGBoost"] = preds
-        results["XGBoost"] = calculate_metrics(y_test, preds)
-        next_day_predictions["XGBoost"] = predict_next_day_ml(xgb_model, X.iloc[-1])
-
     if "ARIMA" in selected_models:
         arima_preds = arima_rolling_forecast(df["Close"], train_size=0.8)
         predictions["ARIMA"] = arima_preds
@@ -110,23 +92,33 @@ def get_predictions(df: pd.DataFrame, selected_models: list[str]) -> tuple[dict,
     if "GARCH" in selected_models:
         vol_preds, actual_vol = garch_volatility_forecast(df["Close"], train_size=0.8)
         volatility_series = vol_preds
-        results["GARCH"] = calculate_metrics(actual_vol, vol_preds)
+        # GARCH predicts volatility, not price, so use different evaluation
+        garch_metrics = calculate_metrics(actual_vol, vol_preds)
+        # For volatility models, we'll show MAE and RMSE but not "accuracy"
+        results["GARCH"] = {
+            "MAE": garch_metrics["MAE"],
+            "RMSE": garch_metrics["RMSE"],
+            "MAPE": garch_metrics["MAPE"],
+            "Accuracy": None  # Volatility models don't have traditional "accuracy"
+        }
         next_day_predictions["GARCH"] = float(np.nan)
 
     if "LSTM" in selected_models:
         lstm_model, scaler_X, scaler_y, metadata = train_lstm(X_train, y_train)
-        lstm_preds = predict_sequence_model(lstm_model, scaler_X, scaler_y, X_test, y_test, window_size=metadata["window_size"])
-        common_index = lstm_preds.index
-        results["LSTM"] = calculate_metrics(y_test.loc[common_index], lstm_preds)
-        predictions["LSTM"] = lstm_preds
+        lstm_preds = predict_sequence_model(lstm_model, scaler_X, scaler_y, X_train, X_test, y_test, window_size=metadata["window_size"])
+        # Only evaluate predictions that correspond to test period
+        test_predictions = lstm_preds[lstm_preds.index.isin(y_test.index)]
+        results["LSTM"] = calculate_metrics(y_test.loc[test_predictions.index], test_predictions)
+        predictions["LSTM"] = test_predictions
         next_day_predictions["LSTM"] = predict_sequence_next_day(lstm_model, scaler_X, scaler_y, X, window_size=metadata["window_size"])
 
     if "CNN+LSTM" in selected_models:
         cnn_model, scaler_X, scaler_y, metadata = train_cnn_lstm(X_train, y_train)
-        cnn_preds = predict_sequence_model(cnn_model, scaler_X, scaler_y, X_test, y_test, window_size=metadata["window_size"])
-        common_index = cnn_preds.index
-        results["CNN+LSTM"] = calculate_metrics(y_test.loc[common_index], cnn_preds)
-        predictions["CNN+LSTM"] = cnn_preds
+        cnn_preds = predict_sequence_model(cnn_model, scaler_X, scaler_y, X_train, X_test, y_test, window_size=metadata["window_size"])
+        # Only evaluate predictions that correspond to test period
+        test_predictions = cnn_preds[cnn_preds.index.isin(y_test.index)]
+        results["CNN+LSTM"] = calculate_metrics(y_test.loc[test_predictions.index], test_predictions)
+        predictions["CNN+LSTM"] = test_predictions
         next_day_predictions["CNN+LSTM"] = predict_sequence_next_day(cnn_model, scaler_X, scaler_y, X, window_size=metadata["window_size"])
 
     comparison = build_comparison_table(results)
@@ -213,14 +205,21 @@ def main() -> None:
 
     st.sidebar.markdown("---")
     st.sidebar.header("Model Controls")
-    selected_models = st.sidebar.multiselect("Select models to compare", MODEL_OPTIONS, default=["Linear Regression", "ARIMA", "LSTM"])
+    selected_models = st.sidebar.multiselect("Select models to compare", MODEL_OPTIONS, default=["Linear Regression", "ARIMA"])
     if st.sidebar.button("Refresh data"):
         df = prepare_btc_dataset()
         st.session_state.df = df
         st.experimental_rerun()
 
+    # Add a button to trigger analysis
+    run_analysis = st.sidebar.button("🚀 Run Analysis", type="primary")
+
     if not selected_models:
-        st.warning("Please choose at least one model to display predictions.")
+        st.info("👆 Select models above and click 'Run Analysis' to start.")
+        return
+
+    if not run_analysis:
+        st.info("👆 Click 'Run Analysis' to train models and generate predictions.")
         return
 
     with st.spinner("Training models and generating predictions..."):
@@ -236,7 +235,14 @@ def main() -> None:
     if metrics:
         metric_df = pd.DataFrame(metrics).T[["MAE", "RMSE", "Accuracy"]]
         metric_df.columns = ["MAE", "RMSE", "Accuracy (%)"]
-        st.dataframe(metric_df.style.format("{:.2f}"))
+        # Handle None values in accuracy column
+        def format_accuracy(val):
+            return f"{val:.2f}" if val is not None else "N/A"
+        st.dataframe(metric_df.style.format({
+            "MAE": "{:.2f}",
+            "RMSE": "{:.2f}",
+            "Accuracy (%)": format_accuracy
+        }))
 
     if next_day_predictions:
         st.subheader("Next-Day Predictions")
@@ -299,7 +305,13 @@ def main() -> None:
 
     st.markdown("---")
     st.subheader("Model Comparison")
-    st.dataframe(comparison.style.format({"MAE": "{:.2f}", "RMSE": "{:.2f}", "Accuracy (%)": "{:.2f}"}))
+    def format_accuracy_comparison(val):
+        return f"{val:.2f}" if pd.notna(val) else "N/A"
+    st.dataframe(comparison.style.format({
+        "MAE": "{:.2f}",
+        "RMSE": "{:.2f}",
+        "Accuracy (%)": format_accuracy_comparison
+    }))
 
     if "GARCH" in selected_models and volatility_series is not None:
         st.markdown("### GARCH Volatility Forecast")

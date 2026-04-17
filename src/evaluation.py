@@ -27,4 +27,8 @@ def build_comparison_table(results: dict) -> pd.DataFrame:
             "Accuracy (%)": metrics.get("Accuracy", None),
         }
         rows.append(row)
-    return pd.DataFrame(rows).sort_values(by="RMSE")
+    df = pd.DataFrame(rows)
+    # Sort by RMSE, but put models with None accuracy at the bottom
+    df["sort_key"] = df["RMSE"].fillna(float('inf'))
+    df = df.sort_values(by="sort_key").drop(columns="sort_key")
+    return df
